@@ -745,19 +745,23 @@ def edit_journal(current_user):
 @app.route("/api/get-journals", methods=['GET'])
 @token_required
 def get_journals(current_user):
-    # Get the optional 'date' parameter from the request
+    # Get the 'date' from the JSON body
     data = request.get_json()
-    date = data.get('date')  # Optional query parameter
+    date = data.get('date')  # Optional parameter
 
     if date:
-        # If a specific date is provided, find journals for that date
+        # If a specific date is provided, search for that date in the journal array
         journal_entry = journal_collection.find_one({
             'username': current_user['username'],
-            'journal.date': date
+            'journal': {
+                '$elemMatch': {'date': date}
+            }
         })
+
         if journal_entry:
-            # Return the journal entries for the specific date
-            return jsonify({'journals': journal_entry['journal']}), 200
+            # Filter the journal entries to return only the entries with the matching date
+            filtered_journals = [entry for entry in journal_entry['journal'] if entry['date'] == date]
+            return jsonify({'journals': filtered_journals}), 200
         else:
             return jsonify({'message': f'No journal entries found for {date}'}), 404
     else:
