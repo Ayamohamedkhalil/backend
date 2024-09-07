@@ -169,7 +169,8 @@ def get_disease_description(current_user, testname, disease_name):
 
         return jsonify({
             'name': disease['name'],
-            'description': disease['description']
+            'description': disease['description'],
+            'link': disease['link']
         }), 200
     else:
         return jsonify({'error': 'Disease not found'}), 404
