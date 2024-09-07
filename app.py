@@ -743,12 +743,17 @@ def edit_journal(current_user):
 
 # ------------ Get journals -----------------------
 
-@app.route("/api/get-journals", methods=['GET'])
+@app.route("/api/get-journals", methods=['POST'])
 @token_required
 def get_journals(current_user):
-    # Get the 'date' from the JSON body
-    data = request.get_json()
-    date = data.get('date')  # Optional parameter
+    # Ensure the request body is valid JSON, even if empty
+    try:
+        data = request.get_json(silent=True) or {}  # This handles empty bodies gracefully
+    except:
+        return jsonify({'error': 'Invalid JSON format'}), 400
+
+    # Get the 'date' from the JSON body (optional)
+    date = data.get('date')
 
     if date:
         # If a specific date is provided, search for that date in the journal array
