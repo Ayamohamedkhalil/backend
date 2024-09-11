@@ -13,6 +13,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import google.generativeai as genai
+import firebase_admin
+from firebase_admin import credentials, messaging
+import uuid
 
 
 load_dotenv()
@@ -127,6 +130,27 @@ def login_api():
             'exp': datetime.utcnow() + timedelta(hours=1)
         }, app.config['SECRET_KEY'], algorithm='HS256')
 
+        login_time = datetime.utcnow()
+        mobile_info = request.headers.get('User-Agent')
+
+        # Check if the mobile device already exists in login_activity
+        existing_activity = users_collection.find_one(
+            {'username': user['username'], 'login_activity.mobile': mobile_info}
+        )
+
+        # If the mobile device does not exist in login_activity, save the login activity
+        if not existing_activity:
+            login_activity_object = {
+                'mobile': mobile_info,
+                'time': login_time.strftime('%I:%M %p'),
+                'date': login_time.strftime('%d-%m-%Y')
+            }
+
+            users_collection.update_one(
+                {'username': user['username']},
+                {'$push': {'login_activity': login_activity_object}}
+            )
+
         # Return user data with token
         return jsonify({
             'message': 'Login successful!',
@@ -139,6 +163,36 @@ def login_api():
     else:
         return jsonify({'error': 'Invalid email or password'}), 401
     
+# ------------------- Login Activity ---------------------------
+
+@app.route("/api/loginActivity", methods=['GET'])
+@token_required
+def login_activity(current_user):
+    user_data = users_collection.find_one(
+        {'username': current_user['username']},
+        {'login_activity': 1, '_id': 0}
+    )
+
+    if user_data and 'login_activity' in user_data:
+        # Extract mobile, time, and date for each login activity
+        login_activities = [
+            {
+                'mobile': activity.get('mobile', 'Unknown Device'),
+                'time': activity.get('time', 'Unknown Time'),
+                'date': activity.get('date', 'Unknown Date')
+            }
+            for activity in user_data['login_activity']
+        ]
+        return jsonify({
+            'login_activities': login_activities
+        }), 200
+    else:
+        return jsonify({'error': 'No login activity found'}), 404
+
+
+def generate_unique_id():
+    return str(uuid.uuid4())
+
 # ------------------- Disease description ------------------------
     
 @app.route("/api/test/<string:testname>/<string:disease_name>", methods=['GET'])
@@ -644,10 +698,12 @@ def create_journal(current_user):
 
     title = data['title']
     content = data['content']
-
+    unique_id = generate_unique_id()
     current_date = datetime.utcnow().strftime('%d-%m-%Y')
+    print(unique_id)
 
     new_entry = {
+        '_id': unique_id,
         'title': title,
         'content': content
     }
@@ -662,7 +718,7 @@ def create_journal(current_user):
         # If there is already a journal for the current date, append the new entry to the `entries` array
         journal_collection.update_one(
             {'username': current_user['username'], 'date': current_date},
-            {'$push': {'journal.$.entries': new_entry}}
+            {'$push': {'entries': new_entry}}
         )
     else:
         # If no journal entry exists for today, create a new one
@@ -676,68 +732,36 @@ def create_journal(current_user):
 
 # ------------- Edit Journal ---------------------
 
-@app.route("/api/edit-journal", methods=['PUT'])
+@app.route("/api/edit_journal", methods=['PUT'])
 @token_required
 def edit_journal(current_user):
     data = request.get_json()
 
-    if 'date' not in data or 'title' not in data or 'new_content' not in data:
-        return jsonify({'error': 'Date, title, and new content are required'}), 400
+    if 'id' not in data or 'new_content' not in data:
+        return jsonify({'error': 'ID and new_content are required'}), 400
 
-    date = data['date']
-    title = data['title']
+    journal_id = data['id']
     new_title = data.get('new_title')  # Optional field
     new_content = data['new_content']
+    current_date = datetime.utcnow().strftime('%d-%m-%Y')
 
-    # Set new date to the current date automatically
-    new_date = datetime.utcnow().strftime('%d-%m-%Y')
+    # Construct the update document
+    update_fields = {'journal.$[dateEntry].entries.$[entry].content': new_content}
+    if new_title:
+        update_fields['journal.$[dateEntry].entries.$[entry].title'] = new_title
 
-    # Find the journal entry for the specified date and title
-    journal_entry = journal_collection.find_one({
-        'username': current_user['username'],
-        'journal.date': date,
-        'journal.entries.title': title
-    })
-
-    if not journal_entry:
-        return jsonify({'error': 'Journal entry not found'}), 404
-
-    # Remove the old entry from the original date
-    journal_collection.update_one(
-        {'username': current_user['username'], 'journal.date': date},
-        {'$pull': {'journal.$[dateEntry].entries': {'title': title}}},
-        array_filters=[{'dateEntry.date': date}]
+    # Find the journal entry by its unique ID
+    result = journal_collection.update_one(
+        {'username': current_user['username'], 'journal.entries._id': journal_id},
+        {'$set': update_fields},
+        array_filters=[
+            {'dateEntry.date': current_date},
+            {'entry._id': journal_id}
+        ]
     )
 
-    # Check if a journal entry already exists for the new date (current date)
-    existing_entry = journal_collection.find_one({
-        'username': current_user['username'],
-        'journal.date': new_date
-    })
-
-    if existing_entry:
-        # Add the updated entry to the new date
-        journal_collection.update_one(
-            {'username': current_user['username'], 'journal.date': new_date},
-            {'$push': {'journal.$[dateEntry].entries': {
-                'title': new_title if new_title else title,
-                'content': new_content
-            }}},
-            array_filters=[{'dateEntry.date': new_date}]
-        )
-    else:
-        # Create a new journal entry for the new date
-        journal_collection.update_one(
-            {'username': current_user['username']},
-            {'$push': {'journal': {
-                'date': new_date,
-                'entries': [{
-                    'title': new_title if new_title else title,
-                    'content': new_content
-                }]
-            }}},
-            upsert=True
-        )
+    if result.matched_count == 0:
+        return jsonify({'error': 'Journal entry not found or does not match the user'}), 404
 
     return jsonify({'message': 'Journal entry updated successfully!'}), 200
 
@@ -748,15 +772,73 @@ def edit_journal(current_user):
 def get_journals(current_user):
     # Ensure the request body is valid JSON, even if empty
     try:
-        data = request.get_json(silent=True) or {}  # This handles empty bodies gracefully
+        data = request.get_json(silent=True) or {}
     except:
         return jsonify({'error': 'Invalid JSON format'}), 400
 
-    # Get the 'date' from the JSON body (optional)
-    date = data.get('date')
+    # Get 'year', 'month', and 'day' from the request (all optional)
+    year = data.get('year')
+    month = data.get('month')
+    day = data.get('day')
 
-    if date:
-        # If a specific date is provided, search for that date in the journal array
+    # Case 1: No filters provided, return all journals
+    if not year and not month and not day:
+        all_journals = journal_collection.find_one({
+            'username': current_user['username']
+        })
+
+        if all_journals and 'journal' in all_journals:
+            return jsonify({'journals': all_journals['journal']}), 200
+        else:
+            return jsonify({'message': 'No journals found for this user'}), 404
+
+    # Case 2: Return all months and their journals for the selected year
+    elif year and not month and not day:
+        journal_entries = journal_collection.find_one({
+            'username': current_user['username'],
+            'journal.date': {
+                '$regex': f'.*-.*-{year}$'  # Match year in 'dd-mm-yyyy' format
+            }
+        })
+
+        if journal_entries:
+            # Extract journals grouped by months
+            months_with_journals = {}
+            for entry in journal_entries['journal']:
+                entry_month = entry['date'].split('-')[1]
+                if entry_month not in months_with_journals:
+                    months_with_journals[entry_month] = []
+                months_with_journals[entry_month].append(entry)
+
+            return jsonify({'months': months_with_journals}), 200
+        else:
+            return jsonify({'message': f'No journal entries found for {year}'}), 404
+
+    # Case 3: Return all days and their journals for the selected month in the selected year
+    elif year and month and not day:
+        journal_entries = journal_collection.find_one({
+            'username': current_user['username'],
+            'journal.date': {
+                '$regex': f'.*-{month}-{year}$'  # Match month and year in 'dd-mm-yyyy' format
+            }
+        })
+
+        if journal_entries:
+            # Extract journals grouped by days in the month
+            days_with_journals = {}
+            for entry in journal_entries['journal']:
+                entry_day = entry['date'].split('-')[0]
+                if entry_day not in days_with_journals:
+                    days_with_journals[entry_day] = []
+                days_with_journals[entry_day].append(entry)
+
+            return jsonify({'days': days_with_journals}), 200
+        else:
+            return jsonify({'message': f'No journal entries found for {month}-{year}'}), 404
+
+    # Case 4: Return journal entries for the specific day in the selected month and year
+    elif year and month and day:
+        date = f'{day}-{month}-{year}'
         journal_entry = journal_collection.find_one({
             'username': current_user['username'],
             'journal': {
@@ -770,17 +852,49 @@ def get_journals(current_user):
             return jsonify({'journals': filtered_journals}), 200
         else:
             return jsonify({'message': f'No journal entries found for {date}'}), 404
+
+    # If no year is provided, return an error
     else:
-        # If no date is provided, return all journals for the current user
-        all_journals = journal_collection.find_one({
-            'username': current_user['username']
-        })
+        return jsonify({'error': 'Year is required to fetch journals'}), 400
 
-        if all_journals and 'journal' in all_journals:
-            return jsonify({'journals': all_journals['journal']}), 200
-        else:
-            return jsonify({'message': 'No journals found for this user'}), 404
+        
+#  -----------------------------------------------------
+# 1oCNBGS2v90u4v-TguOMRNAbkbWGPVh6zC7fLdITzlU
 
+# Initialize Firebase Admin with the downloaded JSON key
+cred = credentials.Certificate('push-notification-de078-firebase-adminsdk-5sv3k-2e121e2b5f.json')
+firebase_admin.initialize_app(cred)
+
+# Function to send push notification
+def send_push_notification(registration_ids, message_title, message_body):
+    # Create a message object
+    message = messaging.MulticastMessage(
+        tokens=registration_ids,
+        notification=messaging.Notification(
+            title=message_title,
+            body=message_body
+        )
+    )
+
+    # Send the message
+    response = messaging.send_multicast(message)
+    return response
+
+# New route to trigger push notifications
+@app.route("/api/send_notification", methods=['POST'])
+def send_notification():
+    data = request.get_json()
+    registration_ids = data.get('registration_ids')  # FCM tokens of mobile devices
+    message_title = data.get('title')
+    message_body = data.get('body')
+
+    if not registration_ids or not message_title or not message_body:
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    # Send the push notification
+    result = send_push_notification(registration_ids, message_title, message_body)
+
+    return jsonify({'result': result.success_count, 'failure': result.failure_count}), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
