@@ -16,6 +16,7 @@ import google.generativeai as genai
 import firebase_admin
 from firebase_admin import credentials, messaging
 import uuid
+from pytz import timezone
 
 
 load_dotenv()
@@ -130,20 +131,35 @@ def login_api():
             'exp': datetime.utcnow() + timedelta(hours=1)
         }, app.config['SECRET_KEY'], algorithm='HS256')
 
-        login_time = datetime.utcnow()
-        mobile_info = request.headers.get('User-Agent')
+        # Convert UTC time to local time (for example, Africa/Cairo)
+        utc_time = datetime.utcnow()
+        local_tz = timezone('Africa/Cairo')
+        local_time = utc_time.replace(tzinfo=timezone('UTC')).astimezone(local_tz)
+        phone_info = data.get('phone')  # Phone type comes from JSON payload
 
-        # Check if the mobile device already exists in login_activity
+        if not phone_info:
+            return jsonify({'error': 'Phone information is required'}), 400
+
+        # Check if the phone already exists in login_activity
         existing_activity = users_collection.find_one(
-            {'username': user['username'], 'login_activity.mobile': mobile_info}
+            {'username': user['username'], 'login_activity.mobile': phone_info}
         )
 
-        # If the mobile device does not exist in login_activity, save the login activity
-        if not existing_activity:
+        if existing_activity:
+            # Update the time and date of the existing phone entry
+            users_collection.update_one(
+                {'username': user['username'], 'login_activity.mobile': phone_info},
+                {'$set': {
+                    'login_activity.$.time': local_time.strftime('%I:%M %p'),
+                    'login_activity.$.date': local_time.strftime('%d-%m-%Y')
+                }}
+            )
+        else:
+            # Add a new login activity for this phone
             login_activity_object = {
-                'mobile': mobile_info,
-                'time': login_time.strftime('%I:%M %p'),
-                'date': login_time.strftime('%d-%m-%Y')
+                'mobile': phone_info,
+                'time': local_time.strftime('%I:%M %p'),
+                'date': local_time.strftime('%d-%m-%Y')
             }
 
             users_collection.update_one(
@@ -688,6 +704,9 @@ def logout(current_user):
         return jsonify({'error': f'Failed to logout: {str(e)}'}), 500
     
 # --------------- Create Journal --------------------
+def generate_unique_id():
+    return str(uuid.uuid4())
+
 @app.route("/api/create_journal", methods=['POST'])
 @token_required
 def create_journal(current_user):
@@ -699,32 +718,38 @@ def create_journal(current_user):
     title = data['title']
     content = data['content']
     unique_id = generate_unique_id()
-    current_date = datetime.utcnow().strftime('%d-%m-%Y')
-    print(unique_id)
+    current_date = datetime.utcnow()  # Store as actual datetime for better querying
 
+    # New journal entry structure
     new_entry = {
         '_id': unique_id,
         'title': title,
         'content': content
     }
 
-    # Find if a journal entry exists for the current date
+    # Check if there's already a journal for today
     journal_entry = journal_collection.find_one({
         'username': current_user['username'],
-        'date': current_date
+        'journal.entries.date': current_date.strftime('%d-%m-%Y')  # Search by formatted date
     })
 
     if journal_entry:
-        # If there is already a journal for the current date, append the new entry to the `entries` array
+        # Append the new entry to the existing journal for the current date
         journal_collection.update_one(
-            {'username': current_user['username'], 'date': current_date},
-            {'$push': {'entries': new_entry}}
+            {'username': current_user['username'], 'journal.entries.date': current_date.strftime('%d-%m-%Y')},
+            {'$push': {'journal.$.entries': new_entry}}  # Push new entry to the matching journal date
         )
     else:
-        # If no journal entry exists for today, create a new one
+        # If no journal entry exists for today, create a new journal entry
+        new_journal_entry = {
+            'date': current_date.strftime('%d-%m-%Y'),  # Store formatted date
+            'entries': [new_entry]
+        }
+
+        # Update the user's journal array with the new journal entry
         journal_collection.update_one(
             {'username': current_user['username']},
-            {'$push': {'journal': {'date': current_date, 'entries': [new_entry]}}},
+            {'$push': {'journal': new_journal_entry}},  # Push new journal to the user's journal array
             upsert=True
         )
 
@@ -743,27 +768,35 @@ def edit_journal(current_user):
     journal_id = data['id']
     new_title = data.get('new_title')  # Optional field
     new_content = data['new_content']
-    current_date = datetime.utcnow().strftime('%d-%m-%Y')
+    new_date = datetime.utcnow().strftime('%d-%m-%Y')  # Current date
 
-    # Construct the update document
-    update_fields = {'journal.$[dateEntry].entries.$[entry].content': new_content}
+    # Construct the update fields
+    update_fields = {
+        'journal.$[journal].entries.$[entry].content': new_content,
+        'journal.$[journal].entries.$[entry].date': new_date
+    }
     if new_title:
-        update_fields['journal.$[dateEntry].entries.$[entry].title'] = new_title
+        update_fields['journal.$[journal].entries.$[entry].title'] = new_title
 
-    # Find the journal entry by its unique ID
+    # Perform the update
     result = journal_collection.update_one(
-        {'username': current_user['username'], 'journal.entries._id': journal_id},
-        {'$set': update_fields},
+        {
+            'username': current_user['username'],
+            'journal.entries._id': journal_id  # Locate the journal entry by its unique ID
+        },
+        {
+            '$set': update_fields
+        },
         array_filters=[
-            {'dateEntry.date': current_date},
-            {'entry._id': journal_id}
+            {'journal.date': {'$eq': datetime.utcnow().strftime('%d-%m-%Y')}},  # Match journal entry by date
+            {'entry._id': journal_id}  # Match the specific entry by ID
         ]
     )
 
     if result.matched_count == 0:
         return jsonify({'error': 'Journal entry not found or does not match the user'}), 404
 
-    return jsonify({'message': 'Journal entry updated successfully!'}), 200
+    return jsonify({'message': 'Journal entry updated successfully with new date!'}), 200
 
 # ------------ Get journals -----------------------
 
@@ -895,6 +928,8 @@ def send_notification():
     result = send_push_notification(registration_ids, message_title, message_body)
 
     return jsonify({'result': result.success_count, 'failure': result.failure_count}), 200
+
+# ------------------------------------- The End :) ------------------------
 
 if __name__ == '__main__':
     app.run(debug=True)
