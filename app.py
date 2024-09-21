@@ -290,38 +290,50 @@ def get_user_tests(current_user):
 @app.route("/api/request-data", methods=['POST'])
 @token_required
 def request_data(current_user):
-    # Fetch the user's previous tests
     previous_tests = current_user.get('tests', [])
 
     if not previous_tests:
         return jsonify({'message': 'No previous tests found'}), 404
 
-    # Prepare the email content
-    tests_info = "\n\n".join([f"Test Name: {test['test_name']}\nDisease: {test['disease_name']}\nDate: {test['date']}" for test in previous_tests])
+    tests_info = []
     
-    # Email content
-    subject = "Your Previous Tests Data"
-    body = f"Dear {current_user['username']},\n\nHere are your previous tests:\n\n{tests_info}\n\nBest regards,\nYour Team"
+    for test in previous_tests:
+        test_name = test.get('test_name', 'N/A')
+        
+        for disease in test.get('diseases', []):
+            disease_name = disease.get('disease_name', 'Unknown disease')
+            disease_date = disease.get('date', 'Unknown date')
+            # Format each test and disease into the desired structure
+            tests_info.append(
+                f"Test Name: {test_name}\n"
+                f"Disease: {disease_name}\n"
+                f"Date: {disease_date}\n"
+            )
+    
+    email_body_content = "\n".join(tests_info)
 
-    # Send the email
+    subject = "Your Previous Tests Data"
+    body = (
+        f"Dear {current_user['username']},\n\n"
+        "Here are your previous tests:\n\n"
+        f"{email_body_content}\n"
+        "Best regards,\nMalaz"
+    )
     try:
         sender_email = app.config['SENDER_EMAIL']
         sender_password = app.config['SENDER_PASSWORD']
         recipient_email = current_user['email']
-
-        # Create the email
+        
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = recipient_email
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
-        # Setup the server
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender_email, sender_password)
 
-        # Send the email
         text = msg.as_string()
         server.sendmail(sender_email, recipient_email, text)
         server.quit()
