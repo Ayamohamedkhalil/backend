@@ -217,45 +217,73 @@ def get_disease_description(current_user, testname, disease_name):
     disease = diseases_collection.find_one({'name': disease_name})
 
     if disease:
-        # Prepare the test entry
-        test_entry = {
-            'test_name': testname,
+        # Prepare the disease entry
+        disease_entry = {
             'disease_name': disease_name,
             'date': datetime.utcnow().strftime('%Y-%m-%d')
         }
 
-        # Check if the user already has a tests section, if not, create it
+        # Check if the user already has tests , if not, create it
         if not current_user.get('tests'):
             users_collection.update_one(
                 {'_id': current_user['_id']},
                 {'$set': {'tests': []}}
             )
 
-        # Add the test entry to the user's tests list
-        users_collection.update_one(
-            {'_id': current_user['_id']},
-            {'$push': {'tests': test_entry}}  # Adds the test_entry to the list
-        )
+        # Find if this testname already exists in the user's tests
+        user_tests = current_user.get('tests', [])
+        test_found = False
+
+        for test in user_tests:
+            if test['test_name'] == testname:
+                test_found = True
+                users_collection.update_one(
+                    {'_id': current_user['_id'], 'tests.test_name': testname},
+                    {'$push': {'tests.$.diseases': disease_entry}}
+                )
+                break
+
+        # If the testname doesn't exist, create a new one
+        if not test_found:
+            new_test_entry = {
+                'test_name': testname,
+                'diseases': [disease_entry]
+            }
+            users_collection.update_one(
+                {'_id': current_user['_id']},
+                {'$push': {'tests': new_test_entry}}
+            )
 
         return jsonify({
             'name': disease['name'],
             'description': disease['description'],
             'link': disease['link']
         }), 200
+
     else:
         return jsonify({'error': 'Disease not found'}), 404
 
 #  -----------------------Get user tests ---------------------------
 
-@app.route("/api/tests", methods=['GET'])
+@app.route("/api/previous_tests", methods=['GET'])
 @token_required
 def get_user_tests(current_user):
     user = users_collection.find_one({'_id': current_user['_id']})
-    
+
     if not user or 'tests' not in user or len(user['tests']) == 0:
         return jsonify({'message': 'No tests found'}), 404
 
-    return jsonify({'tests': user['tests']}), 200
+    tests = []
+    for test in user['tests']:
+        testname = test['test_name']
+        for disease in test['diseases']:
+            tests.append({
+                'testname': testname,
+                'disease_name': disease['disease_name'],
+                'date': disease['date']
+            })
+
+    return jsonify({'tests': tests}), 200
 
 # ----------------- Resquest Data --------------------------
 
