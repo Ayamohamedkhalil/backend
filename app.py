@@ -934,9 +934,17 @@ def get_journals(current_user):
 #  -----------------------------------------------------
 # 1oCNBGS2v90u4v-TguOMRNAbkbWGPVh6zC7fLdITzlU
 
-# Initialize Firebase Admin with the downloaded JSON key
-cred = credentials.Certificate('graduation-81d14-firebase-adminsdk-k777j-8b1fdab21f.json')
-firebase_admin.initialize_app(cred)
+firebase_credentials_json = os.getenv('FIREBASE_CREDENTIALS')
+
+if firebase_credentials_json:
+    # Convert the JSON string to a dictionary
+    firebase_credentials_dict = json.loads(firebase_credentials_json)
+
+    # Initialize Firebase using the dictionary as credentials
+    cred = credentials.Certificate(firebase_credentials_dict)
+    firebase_admin.initialize_app(cred)
+else:
+    raise ValueError("Firebase credentials not found in environment variables.")
 
 # Function to send push notification
 def send_push_notification(registration_ids, message_title, message_body):
