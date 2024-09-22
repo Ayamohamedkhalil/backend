@@ -935,7 +935,7 @@ def get_journals(current_user):
 # 1oCNBGS2v90u4v-TguOMRNAbkbWGPVh6zC7fLdITzlU
 
 # Initialize Firebase Admin with the downloaded JSON key
-cred = credentials.Certificate('push-notification-de078-firebase-adminsdk-5sv3k-2e121e2b5f.json')
+cred = credentials.Certificate('graduation-81d14-firebase-adminsdk-k777j-8b1fdab21f.json')
 firebase_admin.initialize_app(cred)
 
 # Function to send push notification
