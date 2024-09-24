@@ -369,7 +369,8 @@ def verify():
                 'verification_expiration': expiration_time
             }}
         )
-        # Store email in the session
+
+        # Store email in session and set the cookie
         session['email'] = email
 
         # Send verification code to user's email
@@ -396,7 +397,11 @@ def verify():
             server.sendmail(sender_email, email, text)
             server.quit()
 
-            return jsonify({'message': 'Verification code sent to your email'}), 200
+            # Return success message
+            response = jsonify({'message': 'Verification code sent to your email'})
+            response.set_cookie('email', email, httponly=True, samesite='Lax')  # Set the email in a secure cookie
+
+            return response, 200
 
         except Exception as e:
             return jsonify({'error': f'Failed to send email: {str(e)}'}), 500
