@@ -81,37 +81,93 @@ def token_required(f):
 def home(current_user):
     return jsonify({'message': f'Welcome, {current_user["username"]}!'}), 200
 
+if os.getenv('RAILWAY_ENVIRONMENT') == 'production':  
+    # Load the Firebase credentials from the environment variable (on Railway)
+    firebase_credentials_json = os.getenv('FIREBASE_CREDENTIALS')
+    
+    if firebase_credentials_json:
+        # Convert the JSON string back to a dictionary
+        firebase_credentials_dict = json.loads(firebase_credentials_json)
+        cred = credentials.Certificate(firebase_credentials_dict)
+        firebase_admin.initialize_app(cred)
+    else:
+        raise ValueError("Firebase credentials not found in environment variables.")
+else:
+    # Local environment: Load the credentials from the JSON file
+    cred = credentials.Certificate('graduationproject-4f4ab-firebase-adminsdk-spja4-dbb848a1df.json')
+    firebase_admin.initialize_app(cred)
+
+# Function to send push notifications
+def send_push_notification(registration_ids, message_title, message_body):
+    message = messaging.MulticastMessage(
+        tokens=registration_ids,
+        notification=messaging.Notification(
+            title=message_title,
+            body=message_body
+        )
+    )
+    response = messaging.send_multicast(message)
+    return response
+
 #  ------------------- Register ---------------------------
 
 @app.route("/api/register", methods=['POST'])
 def register_api():
-    data = request.get_json()
-    error_message, valid = validate_registration_data(data, users_collection)
-    if not valid:
-        return jsonify({'error': error_message}), 400
+    try:
+        data = request.get_json()
 
-    hashed_password = generate_password_hash(data['password'])
-    user_data = {
-        'username': data['username'],
-        'email': data['email'],
-        'password': hashed_password
-    }
-    users_collection.insert_one(user_data)
-    # Generate token
-    token = jwt.encode({
-        'user': data["username"],
-        'exp': datetime.utcnow() + timedelta(hours=1)
-    }, app.config['SECRET_KEY'], algorithm='HS256')
+        # Validate the registration data
+        error_message, valid = validate_registration_data(data, users_collection)
+        if not valid:
+            return jsonify({'error': error_message}), 400
 
-    # Return user data with token
-    return jsonify({
-        'message': f'Account created for {data["username"]}!',
-        'user': {
+        # Check if email already exists
+        existing_email = users_collection.find_one({'email': data['email']})
+        if existing_email:
+            return jsonify({'error': 'Email already exists'}), 400
+
+        # Hash the password
+        hashed_password = generate_password_hash(data['password'])
+
+        # Collect the FCM token from the request
+        fcm_token = data.get('fcm_token')
+        if not fcm_token:
+            return jsonify({'error': 'FCM token is required'}), 400
+
+        user_data = {
             'username': data['username'],
-            'email': data['email']
-        },
-        'token': token
-    }), 201
+            'email': data['email'],
+            'password': hashed_password,
+            'fcm_token': fcm_token  # Store the FCM token
+        }
+
+        # Insert the user data into the database
+        try:
+            users_collection.insert_one(user_data)
+        except Exception as e:
+            return jsonify({'error': 'Unable to create user'}), 500
+
+        # Generate JWT token
+        try:
+            token = jwt.encode({
+                'user': data["username"],
+                'exp': datetime.utcnow() + timedelta(hours=1)
+            }, app.config['SECRET_KEY'], algorithm='HS256')
+        except Exception as e:
+            return jsonify({'error': 'Token generation failed'}), 500
+
+        # Return user data with token
+        return jsonify({
+            'message': f'Account created for {data["username"]}!',
+            'user': {
+                'username': data['username'],
+                'email': data['email']
+            },
+            'token': token
+        }), 201
+
+    except Exception as e:
+        return jsonify({'error': 'An unexpected error occurred'}), 500
 
 #  ------------------- Login ---------------------------
 
@@ -126,6 +182,17 @@ def login_api():
     user = users_collection.find_one({'email': data['email']})
 
     if user and check_password_hash(user['password'], data['password']):
+        # Collect the FCM token from the request
+        fcm_token = data.get('fcm_token')
+        if not fcm_token:
+            return jsonify({'error': 'FCM token is required'}), 400
+
+        # Update the user's FCM token
+        users_collection.update_one(
+            {'_id': user['_id']},
+            {'$set': {'fcm_token': fcm_token}}
+        )
+
         # Generate token using the username
         token = jwt.encode({
             'user': user["username"],
@@ -224,7 +291,7 @@ def get_disease_description(current_user, testname, disease_name):
             'date': datetime.utcnow().strftime('%Y-%m-%d')
         }
 
-        # Check if the user already has tests , if not, create it
+        # Check if the user already has tests, if not, create it
         if not current_user.get('tests'):
             users_collection.update_one(
                 {'_id': current_user['_id']},
@@ -254,6 +321,17 @@ def get_disease_description(current_user, testname, disease_name):
                 {'_id': current_user['_id']},
                 {'$push': {'tests': new_test_entry}}
             )
+
+        # Send a push notification after completing the test
+        registration_ids = current_user.get('fcm_token')  # Ensure the user's FCM token is stored in the database
+        if registration_ids:
+            message_title = f"Test '{testname}' Completed"
+            message_body = f"You successfully completed the test for {disease_name}. Check your results!"
+            notification_response = send_push_notification([registration_ids], message_title, message_body)
+            if notification_response.success_count > 0:
+                print(f"Notification sent successfully to {registration_ids}")
+            else:
+                print(f"Failed to send notification: {notification_response.failure_count}")
 
         return jsonify({
             'name': disease['name'],
@@ -291,6 +369,7 @@ def get_user_tests(current_user):
 @app.route("/api/request-data", methods=['POST'])
 @token_required
 def request_data(current_user):
+    # Fetch the user's previous tests
     previous_tests = current_user.get('tests', [])
 
     if not previous_tests:
@@ -301,6 +380,7 @@ def request_data(current_user):
     for test in previous_tests:
         test_name = test.get('test_name', 'N/A')
         
+        # Loop through diseases in the test
         for disease in test.get('diseases', []):
             disease_name = disease.get('disease_name', 'Unknown disease')
             disease_date = disease.get('date', 'Unknown date')
@@ -313,6 +393,7 @@ def request_data(current_user):
     
     email_body_content = "\n".join(tests_info)
 
+    # Email content
     subject = "Your Previous Tests Data"
     body = (
         f"Dear {current_user['username']},\n\n"
@@ -320,21 +401,26 @@ def request_data(current_user):
         f"{email_body_content}\n"
         "Best regards,\nMalaz"
     )
+
+    # Send the email
     try:
         sender_email = app.config['SENDER_EMAIL']
         sender_password = app.config['SENDER_PASSWORD']
         recipient_email = current_user['email']
-        
+
+        # Create the email
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = recipient_email
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
+        # Setup the server
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender_email, sender_password)
 
+        # Send the email
         text = msg.as_string()
         server.sendmail(sender_email, recipient_email, text)
         server.quit()
@@ -358,8 +444,8 @@ def verify():
     user = users_collection.find_one({'email': email})
 
     if user:
-        verification_code = str(random.randint(1000, 9999))  # Generate a 4-digit code
-        expiration_time = datetime.utcnow() + timedelta(minutes=5)  # Set expiration time to 5 minutes from now
+        verification_code = str(random.randint(1000, 9999))  
+        expiration_time = datetime.utcnow() + timedelta(minutes=5)
 
         # Store the verification code and expiration time in the database
         users_collection.update_one(
@@ -373,7 +459,6 @@ def verify():
         # Store email in session and set the cookie
         session['email'] = email
 
-        # Send verification code to user's email
         try:
             sender_email = app.config['SENDER_EMAIL']
             sender_password = app.config['SENDER_PASSWORD']
@@ -457,7 +542,7 @@ def resetPassword():
 
     error_message, valid = validate_reset_password(data)
     if not valid:
-        return jsonify({'error': error_message}), 401
+        return jsonify({'error': error_message}), 400
 
     # If all checks pass, reset the password
     hashed_password = generate_password_hash(new_password)
@@ -574,7 +659,7 @@ def contact_us(current_user):
     firstname = data.get('firstname')
     lastname = data.get('lastname')
     email = current_user['email']
-    message = data.get('message')
+    message = data.get('message') 
 
     # Validate input
     if not all([firstname, lastname, email, message]):
@@ -759,12 +844,12 @@ def create_journal(current_user):
     data = request.get_json()
 
     if 'title' not in data or 'content' not in data:
-        return jsonify({'error': 'Title and content are required'}), 400
+        return jsonify({'error': 'title and content are required'}), 400
 
     title = data['title']
     content = data['content']
     unique_id = generate_unique_id()
-    current_date = datetime.utcnow()  # Store as actual datetime for better querying
+    current_date = datetime.utcnow() 
 
     # New journal entry structure
     new_entry = {
@@ -809,7 +894,7 @@ def edit_journal(current_user):
     data = request.get_json()
 
     if 'id' not in data or 'new_content' not in data:
-        return jsonify({'error': 'ID and new_content are required'}), 400
+        return jsonify({'error': 'id and new_content are required'}), 400
 
     journal_id = data['id']
     new_title = data.get('new_title')  # Optional field
@@ -937,51 +1022,52 @@ def get_journals(current_user):
         return jsonify({'error': 'Year is required to fetch journals'}), 400
 
         
-#  -----------------------------------------------------
+#  ------------------------ Send Notifications -----------------------------
 # 1oCNBGS2v90u4v-TguOMRNAbkbWGPVh6zC7fLdITzlU
 
-firebase_credentials_json = os.getenv('FIREBASE_CREDENTIALS')
+# Check if running on Railway or locally
+# if os.getenv('RAILWAY_ENVIRONMENT') == 'production':  
+#     # Load the Firebase credentials from the environment variable (on Railway)
+#     firebase_credentials_json = os.getenv('FIREBASE_CREDENTIALS')
+#     if firebase_credentials_json:
+#         # Convert the JSON string to a dictionary
+#         firebase_credentials_dict = json.loads(firebase_credentials_json)
+#         cred = credentials.Certificate(firebase_credentials_dict)
+#         firebase_admin.initialize_app(cred)
+#     else:
+#         raise ValueError("Firebase credentials not found in environment variables.")
+# else:
+#     # Local environment: Load the credentials from the JSON file
+#     cred = credentials.Certificate('graduationproject-4f4ab-firebase-adminsdk-spja4-dbb848a1df.json')
+#     firebase_admin.initialize_app(cred)
 
-if firebase_credentials_json:
-    # Convert the JSON string to a dictionary
-    firebase_credentials_dict = json.loads(firebase_credentials_json)
+# # Function to send push notifications
+# def send_push_notification(registration_ids, message_title, message_body):
+#     message = messaging.MulticastMessage(
+#         tokens=registration_ids,
+#         notification=messaging.Notification(
+#             title=message_title,
+#             body=message_body
+#         )
+#     )
+#     response = messaging.send_multicast(message)
+#     return response
 
-    # Initialize Firebase using the dictionary as credentials
-    cred = credentials.Certificate(firebase_credentials_dict)
-    firebase_admin.initialize_app(cred)
-else:
-    raise ValueError("Firebase credentials not found in environment variables.")
+# # New route to trigger push notifications
+# @app.route("/api/send_notification", methods=['POST'])
+# def send_notification():
+#     data = request.get_json()
+#     registration_ids = data.get('registration_ids')  # FCM tokens of mobile devices
+#     message_title = data.get('title')
+#     message_body = data.get('body')
 
-# Function to send push notification
-def send_push_notification(registration_ids, message_title, message_body):
-    # Create a message object
-    message = messaging.MulticastMessage(
-        tokens=registration_ids,
-        notification=messaging.Notification(
-            title=message_title,
-            body=message_body
-        )
-    )
+#     if not registration_ids or not message_title or not message_body:
+#         return jsonify({'error': 'Missing required fields'}), 400
 
-    # Send the message
-    response = messaging.send_multicast(message)
-    return response
+#     # Send the push notification
+#     result = send_push_notification(registration_ids, message_title, message_body)
 
-# New route to trigger push notifications
-@app.route("/api/send_notification", methods=['POST'])
-def send_notification():
-    data = request.get_json()
-    registration_ids = data.get('registration_ids')  # FCM tokens of mobile devices
-    message_title = data.get('title')
-    message_body = data.get('body')
-
-    if not registration_ids or not message_title or not message_body:
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    # Send the push notification
-    result = send_push_notification(registration_ids, message_title, message_body)
-
-    return jsonify({'result': result.success_count, 'failure': result.failure_count}), 200
+#     return jsonify({'result': result.success_count, 'failure': result.failure_count}), 200
 
 # ------------------------------------- The End :) ------------------------
 
