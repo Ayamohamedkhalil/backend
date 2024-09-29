@@ -97,16 +97,17 @@ else:
     cred = credentials.Certificate('graduationproject-4f4ab-firebase-adminsdk-spja4-dbb848a1df.json')
     firebase_admin.initialize_app(cred)
 
-# Function to send push notifications
-def send_push_notification(registration_ids, message_title, message_body):
-    message = messaging.MulticastMessage(
-        tokens=registration_ids,
+def send_push_notification(token, title, body):
+    message = messaging.Message(
         notification=messaging.Notification(
-            title=message_title,
-            body=message_body
-        )
+            title=title,
+            body=body,
+        ),
+        token=token,
     )
-    response = messaging.send_multicast(message)
+
+    response = messaging.send(message)
+    print('Successfully sent message:', response)
     return response
 
 #  ------------------- Register ---------------------------
@@ -323,15 +324,15 @@ def get_disease_description(current_user, testname, disease_name):
             )
 
         # Send a push notification after completing the test
-        registration_ids = current_user.get('fcm_token')  # Ensure the user's FCM token is stored in the database
-        if registration_ids:
+        registration_token = current_user.get('fcm_token')  # Retrieve FCM token directly as string
+        if registration_token:
             message_title = f"Test '{testname}' Completed"
-            message_body = f"You successfully completed the test for {disease_name}. Check your results!"
-            notification_response = send_push_notification([registration_ids], message_title, message_body)
-            if notification_response.success_count > 0:
-                print(f"Notification sent successfully to {registration_ids}")
+            message_body = f"You successfully completed the test for {disease_name}."
+            notification_response = send_push_notification(registration_token, message_title, message_body)
+            if notification_response:
+                print(f"Notification sent successfully to {registration_token}")
             else:
-                print(f"Failed to send notification: {notification_response.failure_count}")
+                print(f"Failed to send notification.")
 
         return jsonify({
             'name': disease['name'],
