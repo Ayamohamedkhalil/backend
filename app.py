@@ -127,10 +127,8 @@ def register_api():
         if existing_email:
             return jsonify({'error': 'Email already exists'}), 400
 
-        # Hash the password
         hashed_password = generate_password_hash(data['password'])
 
-        # Collect the FCM token from the request
         fcm_token = data.get('fcm_token')
         if not fcm_token:
             return jsonify({'error': 'FCM token is required'}), 400
@@ -139,7 +137,7 @@ def register_api():
             'username': data['username'],
             'email': data['email'],
             'password': hashed_password,
-            'fcm_token': fcm_token  # Store the FCM token
+            'fcm_token': fcm_token  
         }
 
         # Insert the user data into the database
@@ -157,7 +155,6 @@ def register_api():
         except Exception as e:
             return jsonify({'error': 'Token generation failed'}), 500
 
-        # Return user data with token
         return jsonify({
             'message': f'Account created for {data["username"]}!',
             'user': {
@@ -771,16 +768,16 @@ def get_all_contacts(current_user):
 @token_required
 def delete_account(current_user):
     data = request.get_json()
-    password = data.get('password')
+    #password = data.get('password')
     #checks if password exists in data
-    if not password:
-        return jsonify({'error': 'Password is required to delete the account.'}), 400
+    # if not password:
+    #     return jsonify({'error': 'Password is required to delete the account.'}), 400
 
     #checks with the password in the database
-    if not check_password_hash(current_user['password'], password):
-        return jsonify({'error': 'Incorrect password.'}), 400
+    # if not check_password_hash(current_user['password'], password):
+    #     return jsonify({'error': 'Incorrect password.'}), 400
 
-    #Delete the user account
+    journal_collection.delete_many({'email': current_user['email']})
     users_collection.delete_one({'username': current_user['username']})
 
     return jsonify({'message': f'Account for {current_user["username"]} has been deleted.'}), 200
@@ -804,21 +801,22 @@ def delete_all_tests(current_user):
 
 # --------------- gemini -------------------------
 
-# Configure Google Generative AI API
 genai.configure(api_key=app.config['GOOGLE_API_KEY'])
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 @app.route('/api/ask-gemini', methods=['POST'])
 def generate_story():
-    # Get the prompt from the request body
+    
     data = request.get_json()
     prompt = data.get('prompt', '')
 
     if not prompt:
         return jsonify({'error': 'Prompt is required'}), 400
+    
+    fixed_prompt = "Give steps to help this user get better based on their journal content:"
+    complete_prompt = f"{fixed_prompt}\n{prompt}"
 
-    # Generate content using Google Generative AI
-    response = model.generate_content(prompt)
+    response = model.generate_content(complete_prompt)
     return jsonify({'response': response.text}), 200
 
 #  ---------------- Logout --------------------------
@@ -861,14 +859,14 @@ def create_journal(current_user):
 
     # Check if there's already a journal for today
     journal_entry = journal_collection.find_one({
-        'username': current_user['username'],
-        'journal.entries.date': current_date.strftime('%d-%m-%Y')  # Search by formatted date
+        'email': current_user['email'],
+        'journal.entries.date': current_date.strftime('%d-%m-%Y')  
     })
 
     if journal_entry:
         # Append the new entry to the existing journal for the current date
         journal_collection.update_one(
-            {'username': current_user['username'], 'journal.entries.date': current_date.strftime('%d-%m-%Y')},
+            {'email': current_user['email'], 'journal.entries.date': current_date.strftime('%d-%m-%Y')},
             {'$push': {'journal.$.entries': new_entry}}  # Push new entry to the matching journal date
         )
     else:
@@ -880,7 +878,7 @@ def create_journal(current_user):
 
         # Update the user's journal array with the new journal entry
         journal_collection.update_one(
-            {'username': current_user['username']},
+            {'email': current_user['email']},
             {'$push': {'journal': new_journal_entry}},  # Push new journal to the user's journal array
             upsert=True
         )
@@ -913,7 +911,7 @@ def edit_journal(current_user):
     # Perform the update
     result = journal_collection.update_one(
         {
-            'username': current_user['username'],
+            'email': current_user['email'],
             'journal.entries._id': journal_id  # Locate the journal entry by its unique ID
         },
         {
@@ -949,7 +947,7 @@ def get_journals(current_user):
     # Case 1: No filters provided, return all journals
     if not year and not month and not day:
         all_journals = journal_collection.find_one({
-            'username': current_user['username']
+            'email': current_user['email'] 
         })
 
         if all_journals and 'journal' in all_journals:
@@ -960,7 +958,7 @@ def get_journals(current_user):
     # Case 2: Return all months and their journals for the selected year
     elif year and not month and not day:
         journal_entries = journal_collection.find_one({
-            'username': current_user['username'],
+            'email': current_user['email'], 
             'journal.date': {
                 '$regex': f'.*-.*-{year}$'  # Match year in 'dd-mm-yyyy' format
             }
@@ -982,7 +980,7 @@ def get_journals(current_user):
     # Case 3: Return all days and their journals for the selected month in the selected year
     elif year and month and not day:
         journal_entries = journal_collection.find_one({
-            'username': current_user['username'],
+            'email': current_user['email'],
             'journal.date': {
                 '$regex': f'.*-{month}-{year}$'  # Match month and year in 'dd-mm-yyyy' format
             }
@@ -1005,7 +1003,7 @@ def get_journals(current_user):
     elif year and month and day:
         date = f'{day}-{month}-{year}'
         journal_entry = journal_collection.find_one({
-            'username': current_user['username'],
+            'email': current_user['email'],
             'journal': {
                 '$elemMatch': {'date': date}
             }
@@ -1021,55 +1019,7 @@ def get_journals(current_user):
     # If no year is provided, return an error
     else:
         return jsonify({'error': 'Year is required to fetch journals'}), 400
-
-        
-#  ------------------------ Send Notifications -----------------------------
-# 1oCNBGS2v90u4v-TguOMRNAbkbWGPVh6zC7fLdITzlU
-
-# Check if running on Railway or locally
-# if os.getenv('RAILWAY_ENVIRONMENT') == 'production':  
-#     # Load the Firebase credentials from the environment variable (on Railway)
-#     firebase_credentials_json = os.getenv('FIREBASE_CREDENTIALS')
-#     if firebase_credentials_json:
-#         # Convert the JSON string to a dictionary
-#         firebase_credentials_dict = json.loads(firebase_credentials_json)
-#         cred = credentials.Certificate(firebase_credentials_dict)
-#         firebase_admin.initialize_app(cred)
-#     else:
-#         raise ValueError("Firebase credentials not found in environment variables.")
-# else:
-#     # Local environment: Load the credentials from the JSON file
-#     cred = credentials.Certificate('graduationproject-4f4ab-firebase-adminsdk-spja4-dbb848a1df.json')
-#     firebase_admin.initialize_app(cred)
-
-# # Function to send push notifications
-# def send_push_notification(registration_ids, message_title, message_body):
-#     message = messaging.MulticastMessage(
-#         tokens=registration_ids,
-#         notification=messaging.Notification(
-#             title=message_title,
-#             body=message_body
-#         )
-#     )
-#     response = messaging.send_multicast(message)
-#     return response
-
-# # New route to trigger push notifications
-# @app.route("/api/send_notification", methods=['POST'])
-# def send_notification():
-#     data = request.get_json()
-#     registration_ids = data.get('registration_ids')  # FCM tokens of mobile devices
-#     message_title = data.get('title')
-#     message_body = data.get('body')
-
-#     if not registration_ids or not message_title or not message_body:
-#         return jsonify({'error': 'Missing required fields'}), 400
-
-#     # Send the push notification
-#     result = send_push_notification(registration_ids, message_title, message_body)
-
-#     return jsonify({'result': result.success_count, 'failure': result.failure_count}), 200
-
+    
 # ------------------------------------- The End :) ------------------------
 
 if __name__ == '__main__':
