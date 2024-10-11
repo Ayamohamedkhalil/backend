@@ -769,11 +769,11 @@ def get_all_contacts(current_user):
 def delete_account(current_user):
     data = request.get_json()
     password = data.get('password')
-    checks if password exists in data
+    # checks if password exists in data
     if not password:
         return jsonify({'error': 'Password is required to delete the account.'}), 400
 
-    checks with the password in the database
+    # checks with the password in the database
     if not check_password_hash(current_user['password'], password):
         return jsonify({'error': 'Incorrect password.'}), 400
 
