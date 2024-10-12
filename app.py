@@ -244,6 +244,32 @@ def login_api():
         }), 200
     else:
         return jsonify({'error': 'Invalid email or password'}), 401
+
+# ------------------- Update the fcm_token -----------------------
+
+@app.route("/api/update_fcm_token", methods=['PUT'])
+@token_required  
+def update_fcm_token(current_user):
+    try:
+        data = request.get_json()
+
+        # Ensure fcm_token is provided
+        fcm_token = data.get('fcm_token')
+        if not fcm_token:
+            return jsonify({'error': 'FCM token is required'}), 400
+
+        result = users_collection.update_one(
+            {'email': current_user['email']}, 
+            {'$set': {'fcm_token': fcm_token}}  
+        )
+
+        if result.modified_count == 0:
+            return jsonify({'error': 'No changes were made or user not found'}), 400
+
+        return jsonify({'message': 'FCM token updated successfully!'}), 200
+
+    except Exception as e:
+        return jsonify({'error': 'An unexpected error occurred'}), 500
     
 # ------------------- Login Activity ---------------------------
 
@@ -256,7 +282,6 @@ def login_activity(current_user):
     )
 
     if user_data and 'login_activity' in user_data:
-        # Extract mobile, time, and date for each login activity
         login_activities = [
             {
                 'mobile': activity.get('mobile', 'Unknown Device'),
