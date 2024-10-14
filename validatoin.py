@@ -4,7 +4,7 @@ from werkzeug.security import check_password_hash
 def validate_registration_data(data, users_collection):
 
     def validate_username():
-        if 'username' not in data:
+        if 'username' not in data and False:
             return 'Username is required'
         elif len(data['username']) < 2:
             return 'Username must be at least 2 characters long'
