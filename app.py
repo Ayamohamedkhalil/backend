@@ -345,16 +345,20 @@ def get_disease_description(current_user, testname, disease_name):
                 {'$push': {'tests': new_test_entry}}
             )
 
-        # Send a push notification after completing the test
-        registration_token = current_user.get('fcm_token')  # Retrieve FCM token directly as string
+        registration_token = current_user.get('fcm_token') 
         if registration_token:
-            message_title = f"Test '{testname}' Completed"
-            message_body = f"You successfully completed the test for {disease_name}."
-            notification_response = send_push_notification(registration_token, message_title, message_body)
-            if notification_response:
-                print(f"Notification sent successfully to {registration_token}")
-            else:
-                print(f"Failed to send notification.")
+            try:
+                message_title = f"Test '{testname}' Completed"
+                message_body = f"You successfully completed the test for {disease_name}."
+                notification_response = send_push_notification(registration_token, message_title, message_body)
+                
+                if notification_response:
+                    print(f"Notification sent successfully to {registration_token}")
+                else:
+                    print(f"Failed to send notification.")
+
+            except Exception as e:
+                print(f"Error sending notification: {e}")
 
         return jsonify({
             'name': disease['name'],
