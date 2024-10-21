@@ -18,6 +18,7 @@ from firebase_admin import credentials, messaging
 import uuid
 from pytz import timezone
 import json
+import base64
 
 
 load_dotenv()
@@ -140,7 +141,6 @@ def register_api():
             'fcm_token': fcm_token  
         }
 
-        # Insert the user data into the database
         try:
             users_collection.insert_one(user_data)
         except Exception as e:
@@ -607,43 +607,51 @@ def get_user_profile(current_user, username):
 
 #  ------------------- Edit Profile ---------------------------
 
+def validate_image_size(base64_image):
+    # Decode the base64 image to check its size
+    image_data = base64.b64decode(base64_image.split(',')[1])  # Strip metadata if present
+    return len(image_data) <= 1 * 1024 * 1024  # 1 MB limit
+
 @app.route('/api/edit-profile', methods=['PATCH'])
 @token_required
 def edit_profile(current_user):
     data = request.get_json()
-
     validation_error, is_valid = validate_editProfile(data, users_collection)
+
     if not is_valid:
         return jsonify({'error': validation_error}), 400
+
     update_fields = {}
 
-    # Update email if provided
     if 'email' in data:
         email_exists = users_collection.find_one({'email': data['email']})
         if email_exists and email_exists['username'] != current_user['username']:
             return jsonify({'error': 'Email is already in use by another account.'}), 400
         update_fields['email'] = data['email']
 
-    # Update username if provided
     if 'username' in data:
         username_exists = users_collection.find_one({'username': data['username']})
         if username_exists and username_exists['username'] != current_user['username']:
             return jsonify({'error': 'Username is already taken.'}), 400
         update_fields['username'] = data['username']
 
-    # Update gender if provided
     if 'gender' in data:
         update_fields['gender'] = data['gender']
 
-    # Update bio if provided
     if 'bio' in data:
         update_fields['bio'] = data['bio']
 
-    # Apply updates if there are any fields to update
+    if 'picture' in data:
+        base64_image = data['picture']
+
+    if not validate_image_size(base64_image):
+            return jsonify({'error': 'Image size exceeds 1 MB limit.'}), 400
+    
+    update_fields['picture'] = base64_image
+
     if update_fields:
         users_collection.update_one({'username': current_user['username']}, {'$set': update_fields})
 
-    # Fetch updated user data
     updated_user = users_collection.find_one({'username': update_fields.get('username', current_user['username'])})
 
     return jsonify({
@@ -652,7 +660,8 @@ def edit_profile(current_user):
             'username': updated_user.get('username'),
             'email': updated_user.get('email'),
             'gender': updated_user.get('gender'),
-            'bio': updated_user.get('bio')
+            'bio': updated_user.get('bio'),
+            'picture': updated_user.get('picture')  
         }
     }), 200
 
