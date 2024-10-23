@@ -19,6 +19,8 @@ import uuid
 from pytz import timezone
 import json
 import base64
+import pytz
+from flask_apscheduler import APScheduler
 
 
 load_dotenv()
@@ -244,6 +246,61 @@ def login_api():
         }), 200
     else:
         return jsonify({'error': 'Invalid email or password'}), 401
+
+ #A function to send a reminder notification
+def send_reminder_notification():
+    users = users_collection.find({"notifications_enabled": True})  # Find all users with notifications enabled
+    
+    for user in users:
+        registration_token = user.get('fcm_token')
+        if registration_token:
+            try:
+                message_title = "Reminder: New Tests Available"
+                message_body = "It's time to complete your new tests. Please check the app."
+                notification_response = send_push_notification(registration_token, message_title, message_body)
+
+                if notification_response:
+                    print(f"Reminder notification sent successfully to {registration_token}")
+                else:
+                    print(f"Failed to send reminder notification.")
+
+            except Exception as e:
+                print(f"Error sending reminder notification: {e}")
+
+# Schedule the reminder notification job
+scheduler.add_job(
+    id='send_reminder_notification',
+    func=send_reminder_notification,
+    trigger='interval',
+    days=2,  # Set the interval to 2 days
+    timezone=pytz.utc  # Make sure to handle timezone
+)
+
+# ------------------- Update the fcm_token -----------------------
+
+@app.route("/api/update_fcm_token", methods=['PUT'])
+@token_required  
+def update_fcm_token(current_user):
+    try:
+        data = request.get_json()
+
+        # Ensure fcm_token is provided
+        fcm_token = data.get('fcm_token')
+        if not fcm_token:
+            return jsonify({'error': 'FCM token is required'}), 400
+
+        result = users_collection.update_one(
+            {'email': current_user['email']}, 
+            {'$set': {'fcm_token': fcm_token}}  
+        )
+
+        if result.modified_count == 0:
+            return jsonify({'error': 'No changes were made or user not found'}), 400
+
+        return jsonify({'message': 'FCM token updated successfully!'}), 200
+
+    except Exception as e:
+        return jsonify({'error': 'An unexpected error occurred'}), 500
 
 # ------------------- Update the fcm_token -----------------------
 
@@ -1061,4 +1118,6 @@ def get_journals(current_user):
 # ------------------------------------- The End :) ------------------------
 
 if __name__ == '__main__':
+    scheduler.init_app(app)
+    scheduler.start()
     app.run(debug=True)
