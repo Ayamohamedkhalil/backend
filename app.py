@@ -1,3 +1,4 @@
+from sched import scheduler
 from flask import Flask, request, jsonify, session
 from pymongo import MongoClient
 from datetime import datetime, timedelta
@@ -21,10 +22,15 @@ import json
 import base64
 import pytz
 from flask_apscheduler import APScheduler
+from hashlib import md5
+from apscheduler.schedulers.background import BackgroundScheduler
 
 
 load_dotenv()
 app = Flask(__name__)
+
+scheduler = BackgroundScheduler()
+scheduler.start()
 
 app.config.from_object(Config)
 app.config['SECRET_KEY']
@@ -120,12 +126,10 @@ def register_api():
     try:
         data = request.get_json()
 
-        # Validate the registration data
         error_message, valid = validate_registration_data(data, users_collection)
         if not valid:
             return jsonify({'error': error_message}), 400
 
-        # Check if email already exists
         existing_email = users_collection.find_one({'email': data['email']})
         if existing_email:
             return jsonify({'error': 'Email already exists'}), 400
@@ -148,7 +152,6 @@ def register_api():
         except Exception as e:
             return jsonify({'error': 'Unable to create user'}), 500
 
-        # Generate JWT token
         try:
             token = jwt.encode({
                 'user': data["username"],
@@ -178,16 +181,13 @@ def login_api():
     if not valid:
         return jsonify({'error': error_message}), 401
 
-    # Find the user by email
     user = users_collection.find_one({'email': data['email']})
 
     if user and check_password_hash(user['password'], data['password']):
-        # Collect the FCM token from the request
         fcm_token = data.get('fcm_token')
         if not fcm_token:
             return jsonify({'error': 'FCM token is required'}), 400
 
-        # Update the user's FCM token
         users_collection.update_one(
             {'_id': user['_id']},
             {'$set': {'fcm_token': fcm_token}}
@@ -247,39 +247,10 @@ def login_api():
     else:
         return jsonify({'error': 'Invalid email or password'}), 401
 
- #A function to send a reminder notification
-def send_reminder_notification():
-    users = users_collection.find({"notifications_enabled": True})  # Find all users with notifications enabled
-    
-    for user in users:
-        registration_token = user.get('fcm_token')
-        if registration_token:
-            try:
-                message_title = "Reminder: New Tests Available"
-                message_body = "It's time to complete your new tests. Please check the app."
-                notification_response = send_push_notification(registration_token, message_title, message_body)
-
-                if notification_response:
-                    print(f"Reminder notification sent successfully to {registration_token}")
-                else:
-                    print(f"Failed to send reminder notification.")
-
-            except Exception as e:
-                print(f"Error sending reminder notification: {e}")
-
-# Schedule the reminder notification job
-scheduler.add_job(
-    id='send_reminder_notification',
-    func=send_reminder_notification,
-    trigger='interval',
-    days=2,  # Set the interval to 2 days
-    timezone=pytz.utc  # Make sure to handle timezone
-)
-
 # ------------------- Update the fcm_token -----------------------
 
 @app.route("/api/update_fcm_token", methods=['PUT'])
-@token_required  
+@token_required  # Ensure the user is authenticated
 def update_fcm_token(current_user):
     try:
         data = request.get_json()
@@ -289,35 +260,10 @@ def update_fcm_token(current_user):
         if not fcm_token:
             return jsonify({'error': 'FCM token is required'}), 400
 
+        # Update the user's fcm_token in the database
         result = users_collection.update_one(
-            {'email': current_user['email']}, 
-            {'$set': {'fcm_token': fcm_token}}  
-        )
-
-        if result.modified_count == 0:
-            return jsonify({'error': 'No changes were made or user not found'}), 400
-
-        return jsonify({'message': 'FCM token updated successfully!'}), 200
-
-    except Exception as e:
-        return jsonify({'error': 'An unexpected error occurred'}), 500
-
-# ------------------- Update the fcm_token -----------------------
-
-@app.route("/api/update_fcm_token", methods=['PUT'])
-@token_required  
-def update_fcm_token(current_user):
-    try:
-        data = request.get_json()
-
-        # Ensure fcm_token is provided
-        fcm_token = data.get('fcm_token')
-        if not fcm_token:
-            return jsonify({'error': 'FCM token is required'}), 400
-
-        result = users_collection.update_one(
-            {'email': current_user['email']}, 
-            {'$set': {'fcm_token': fcm_token}}  
+            {'email': current_user['email']},  # Find user by their email (or use other identifiers if needed)
+            {'$set': {'fcm_token': fcm_token}}  # Update the fcm_token
         )
 
         if result.modified_count == 0:
@@ -339,6 +285,7 @@ def login_activity(current_user):
     )
 
     if user_data and 'login_activity' in user_data:
+        # Extract mobile, time, and date for each login activity
         login_activities = [
             {
                 'mobile': activity.get('mobile', 'Unknown Device'),
@@ -358,27 +305,24 @@ def generate_unique_id():
     return str(uuid.uuid4())
 
 # ------------------- Disease description ------------------------
-    
 @app.route("/api/test/<string:testname>/<string:disease_name>", methods=['GET'])
 @token_required
 def get_disease_description(current_user, testname, disease_name):
     disease = diseases_collection.find_one({'name': disease_name})
 
     if disease:
-        # Prepare the disease entry
         disease_entry = {
             'disease_name': disease_name,
             'date': datetime.utcnow().strftime('%Y-%m-%d')
         }
 
-        # Check if the user already has tests, if not, create it
+        # Ensure the user's tests field exists
         if not current_user.get('tests'):
             users_collection.update_one(
-                {'_id': current_user['_id']},
+                {'email': current_user['email']},  # Change to use email instead of ID
                 {'$set': {'tests': []}}
             )
 
-        # Find if this testname already exists in the user's tests
         user_tests = current_user.get('tests', [])
         test_found = False
 
@@ -386,36 +330,51 @@ def get_disease_description(current_user, testname, disease_name):
             if test['test_name'] == testname:
                 test_found = True
                 users_collection.update_one(
-                    {'_id': current_user['_id'], 'tests.test_name': testname},
+                    {'email': current_user['email'], 'tests.test_name': testname},  # Use email
                     {'$push': {'tests.$.diseases': disease_entry}}
                 )
                 break
 
-        # If the testname doesn't exist, create a new one
         if not test_found:
             new_test_entry = {
                 'test_name': testname,
                 'diseases': [disease_entry]
             }
             users_collection.update_one(
-                {'_id': current_user['_id']},
+                {'email': current_user['email']},  # Use email
                 {'$push': {'tests': new_test_entry}}
             )
 
-        registration_token = current_user.get('fcm_token') 
+        # Send completion notification
+        registration_token = current_user.get('fcm_token')
         if registration_token:
             try:
                 message_title = f"Test '{testname}' Completed"
                 message_body = f"You successfully completed the test for {disease_name}."
                 notification_response = send_push_notification(registration_token, message_title, message_body)
-                
+
                 if notification_response:
                     print(f"Notification sent successfully to {registration_token}")
                 else:
-                    print(f"Failed to send notification.")
-
+                    print("Failed to send notification.")
             except Exception as e:
                 print(f"Error sending notification: {e}")
+
+        # Schedule the reminder notification if reminders are enabled
+        if current_user.get('reminder_enabled', False):
+            try:
+                job_id = f'test_reminder_{md5(current_user["email"].encode()).hexdigest()}_{testname}'  # Unique job ID
+                scheduler.add_job(
+                    id=job_id,
+                    func=send_test_reminder_notification,
+                    trigger='date',
+                    run_date=datetime.now(pytz.utc) + timedelta(minutes=2),
+                    args=[current_user['email'], testname],  # Pass user email and test name
+                    timezone=pytz.utc
+                )
+                print(f"Reminder notification scheduled for user {current_user['email']} after 2 minutes.")
+            except Exception as e:
+                print(f"Error scheduling reminder notification: {e}")
 
         return jsonify({
             'name': disease['name'],
@@ -425,6 +384,42 @@ def get_disease_description(current_user, testname, disease_name):
 
     else:
         return jsonify({'error': 'Disease not found'}), 404
+
+# ------------- Toggle Reminder ----------------
+@app.route('/api/toggle_reminder', methods=['POST'])
+def toggle_test_reminder():
+    data = request.get_json()
+    user_email = data.get('email')
+    reminder_enabled = data.get('reminder_enabled', False)
+
+    user = users_collection.find_one({'email': user_email})
+    if user:
+        # Update the user data to toggle the reminder using email
+        users_collection.update_one({'email': user_email}, {'$set': {'reminder_enabled': reminder_enabled}})
+        return jsonify({"message": "Test reminder updated", "reminder_enabled": reminder_enabled}), 200
+    else:
+        return jsonify({"error": "User not found"}), 404
+
+# ------------- Send Test Reminder Notification ---------------
+def send_test_reminder_notification(user_email, testname):
+    user = users_collection.find_one({"email": user_email})
+
+    if user:
+        registration_token = user.get('fcm_token')
+        if registration_token:
+            try:
+                message_title = "Reminder: Retake the Test"
+                message_body = f"It's time to retake the test '{testname}'. Please check the app."
+                notification_response = send_push_notification(registration_token, message_title, message_body)
+
+                if notification_response:
+                    print(f"Reminder notification sent successfully to {registration_token}")
+                else:
+                    print("Failed to send reminder notification.")
+            except Exception as e:
+                print(f"Error sending reminder notification: {e}")
+    else:
+        print(f"User with email {user_email} not found.")
 
 #  -----------------------Get user tests ---------------------------
 
@@ -980,6 +975,72 @@ def create_journal(current_user):
 
     return jsonify({'message': 'Journal entry created successfully!'}), 201
 
+#  -----------------------------------------
+def generate_unique_id():
+    return str(uuid.uuid4())
+
+@app.route("/api/create_journal2", methods=['POST'])
+@token_required
+def create_journal2(current_user):
+    data = request.get_json()
+
+    if 'title' not in data or 'content' not in data:
+        return jsonify({'error': 'title and content are required'}), 400
+
+    title = data['title']
+    content = data['content']
+    unique_id = generate_unique_id()
+
+    # Optional fields for year, month, and day
+    year = data.get('year')
+    month = data.get('month')
+    day = data.get('day')
+
+    # Use provided year, month, and day if available, otherwise default to the current date
+    if year and month and day:
+        try:
+            # Construct a custom date from the provided fields
+            custom_date = datetime(int(year), int(month), int(day))
+        except ValueError:
+            return jsonify({'error': 'Invalid year, month, or day format.'}), 400
+    else:
+        custom_date = datetime.utcnow()  # Use current date if not provided
+
+    # New journal entry structure
+    new_entry = {
+        '_id': unique_id,
+        'title': title,
+        'content': content
+    }
+
+    # Check if there's already a journal for the custom date
+    journal_entry = journal_collection.find_one({
+        'email': current_user['email'],
+        'journal.entries.date': custom_date.strftime('%d-%m-%Y')
+    })
+
+    if journal_entry:
+        # Append the new entry to the existing journal for the custom date
+        journal_collection.update_one(
+            {'email': current_user['email'], 'journal.entries.date': custom_date.strftime('%d-%m-%Y')},
+            {'$push': {'journal.$.entries': new_entry}}  # Push new entry to the matching journal date
+        )
+    else:
+        # If no journal entry exists for the custom date, create a new journal entry
+        new_journal_entry = {
+            'date': custom_date.strftime('%d-%m-%Y'),  # Store formatted custom date
+            'entries': [new_entry]
+        }
+
+        # Update the user's journal array with the new journal entry
+        journal_collection.update_one(
+            {'email': current_user['email']},
+            {'$push': {'journal': new_journal_entry}},  # Push new journal to the user's journal array
+            upsert=True
+        )
+
+    return jsonify({'message': 'Journal entry created successfully!'}), 201
+
 # ------------- Edit Journal ---------------------
 
 @app.route("/api/edit_journal", methods=['PUT'])
@@ -1114,10 +1175,10 @@ def get_journals(current_user):
     # If no year is provided, return an error
     else:
         return jsonify({'error': 'Year is required to fetch journals'}), 400
-    
+
+# ------------------------------------------------
+
 # ------------------------------------- The End :) ------------------------
 
 if __name__ == '__main__':
-    scheduler.init_app(app)
-    scheduler.start()
     app.run(debug=True)
