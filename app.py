@@ -652,7 +652,6 @@ def get_user_profile(current_user, username):
 #  ------------------- Edit Profile ---------------------------
 
 def validate_image_size(base64_image):
-    # Decode the base64 image to check its size
     image_data = base64.b64decode(base64_image.split(',')[1])  # Strip metadata if present
     return len(image_data) <= 1 * 1024 * 1024  # 1 MB limit
 
@@ -660,8 +659,11 @@ def validate_image_size(base64_image):
 @token_required
 def edit_profile(current_user):
     data = request.get_json()
+    
+    if not data:
+        return jsonify({'message': 'No changes made. Profile saved successfully!'}), 200
+    
     validation_error, is_valid = validate_editProfile(data, users_collection)
-
     if not is_valid:
         return jsonify({'error': validation_error}), 400
 
@@ -687,14 +689,14 @@ def edit_profile(current_user):
 
     if 'picture' in data:
         base64_image = data['picture']
-
-    if not validate_image_size(base64_image):
+        if not validate_image_size(base64_image):
             return jsonify({'error': 'Image size exceeds 1 MB limit.'}), 400
-    
-    update_fields['picture'] = base64_image
+        update_fields['picture'] = base64_image
 
-    if update_fields:
-        users_collection.update_one({'username': current_user['username']}, {'$set': update_fields})
+    if not update_fields:
+        return jsonify({'message': 'No changes made. Profile saved successfully!'}), 200
+
+    users_collection.update_one({'username': current_user['username']}, {'$set': update_fields})
 
     updated_user = users_collection.find_one({'username': update_fields.get('username', current_user['username'])})
 
