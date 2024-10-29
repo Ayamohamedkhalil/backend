@@ -74,7 +74,7 @@ def token_required(f):
                 return jsonify({'Alert': 'Please, Login again to continue'}), 401
 
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
-            current_user = users_collection.find_one({'username': data['user']})
+            current_user = users_collection.find_one({'username': data['username']})
             if not current_user:
                 return jsonify({'Alert': 'User not found!'}), 401
         except jwt.ExpiredSignatureError:
