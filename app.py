@@ -625,20 +625,17 @@ def resetPassword():
 
 # ---------------------- Get user profile Info ------------------------------
 
-@app.route("/api/user/profile/<string:username>", methods=['GET'])
+@app.route("/api/user/profile", methods=['GET'])
 @token_required
-def get_user_profile(current_user, username):
-    
-    if current_user['username'] != username:
-        return jsonify({'error': 'You can only access your own profile'}), 403
-
+def get_user_profile(current_user):
     user = users_collection.find_one(
-        {'username': username},
-        {'_id': 0, 'username': 1, 'email': 1, 'gender': 1, 'bio': 1, 'picture': 1}
+        {'username': current_user['username']},
+        {'_id': 1, 'username': 1, 'email': 1, 'gender': 1, 'bio': 1, 'picture': 1}
     )
 
     if user:
         profile_data = {
+            '_id': user.get('_id'),
             'name': user.get('username'),
             'email': user.get('email'),
             'gender': user.get('gender'),
@@ -648,7 +645,6 @@ def get_user_profile(current_user, username):
         return jsonify(profile_data), 200
     else:
         return jsonify({'error': 'User not found'}), 404
-
 #  ------------------- Edit Profile ---------------------------
 
 def validate_image_size(base64_image):
