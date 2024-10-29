@@ -637,7 +637,7 @@ def get_user_profile(current_user):
 
     if user:
         profile_data = {
-            '_id': user.get('_id'),
+            '_id': str(user.get('_id')),
             'name': user.get('username'),
             'email': user.get('email'),
             'gender': user.get('gender'),
