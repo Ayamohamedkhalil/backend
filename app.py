@@ -154,7 +154,8 @@ def register_api():
 
         try:
             token = jwt.encode({
-                'user': data["username"],
+                'username': data["username"],
+                'email': data["email"],
                 'exp': datetime.utcnow() + timedelta(hours=1)
             }, app.config['SECRET_KEY'], algorithm='HS256')
         except Exception as e:
@@ -196,7 +197,8 @@ def login_api():
 
         # Generate token using the username
         token = jwt.encode({
-            'user': user["username"],
+            'username': user["username"],
+            'email': user["email"],
             'exp': datetime.utcnow() + timedelta(hours=1)
         }, app.config['SECRET_KEY'], algorithm='HS256')
 
@@ -629,7 +631,7 @@ def resetPassword():
 @token_required
 def get_user_profile(current_user):
     user = users_collection.find_one(
-        {'username': current_user['username']},
+        {'email': current_user['email']},
         {'_id': 1, 'username': 1, 'email': 1, 'gender': 1, 'bio': 1, 'picture': 1}
     )
 
@@ -645,9 +647,11 @@ def get_user_profile(current_user):
         return jsonify(profile_data), 200
     else:
         return jsonify({'error': 'User not found'}), 404
+
 #  ------------------- Edit Profile ---------------------------
 
 def validate_image_size(base64_image):
+    # Decode the base64 image to check its size
     image_data = base64.b64decode(base64_image.split(',')[1])  # Strip metadata if present
     return len(image_data) <= 1 * 1024 * 1024  # 1 MB limit
 
