@@ -676,9 +676,9 @@ def edit_profile(current_user):
         update_fields['email'] = data['email']
 
     if 'username' in data:
-        username_exists = users_collection.find_one({'username': data['username']})
-        if username_exists and username_exists['username'] != current_user['username']:
-            return jsonify({'error': 'Username is already taken.'}), 400
+        # username_exists = users_collection.find_one({'username': data['username']})
+        # if username_exists and username_exists['username'] != current_user['username']:
+        #     return jsonify({'error': 'Username is already taken.'}), 400
         update_fields['username'] = data['username']
 
     if 'gender' in data:
