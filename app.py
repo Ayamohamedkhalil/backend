@@ -700,6 +700,15 @@ def edit_profile(current_user):
 
     updated_user = users_collection.find_one({'username': update_fields.get('username', current_user['username'])})
 
+    try:
+        token = jwt.encode({
+            'username': updated_user.get('username', current_user['username']),
+            'email': updated_user.get('email', current_user['email']),
+            'exp': datetime.utcnow() + timedelta(hours=1)
+        }, app.config['SECRET_KEY'], algorithm='HS256')
+    except Exception as e:
+        return jsonify({'error': 'Token generation failed'}), 500
+
     return jsonify({
         'message': 'Profile updated successfully!',
         'user': {
@@ -708,7 +717,8 @@ def edit_profile(current_user):
             'gender': updated_user.get('gender'),
             'bio': updated_user.get('bio'),
             'picture': updated_user.get('picture')  
-        }
+        },
+        'token': token
     }), 200
 
 # -------------------------- Change password -------------------------------------
